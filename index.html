@@ -114,6 +114,12 @@ button{font-family:inherit;cursor:pointer;font-size:14px;border-radius:var(--rad
 .q-option.correct{background:#00d49a22!important;border-color:var(--accent)!important;color:var(--accent)!important}
 .q-option.wrong{background:#ff4f4f18!important;border-color:var(--danger)!important;color:var(--danger)!important}
 
+/* Matching question */
+.match-item{position:relative;padding:11px;font-size:13px;text-align:center;min-height:46px;display:flex;align-items:center;justify-content:center}
+.match-item.match-active{border-color:var(--accent)!important;background:var(--accent-dim)!important}
+.match-item.match-selected{border-color:var(--accent2)}
+.match-num{position:absolute;top:3px;left:3px;background:var(--accent2);color:#fff;font-size:10px;font-weight:800;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+
 /* Progress bar */
 .progress-wrap{flex:1;height:5px;background:var(--bg4);border-radius:4px;margin:0 10px}
 .progress-fill{height:5px;background:var(--accent);border-radius:4px;transition:width .35s ease}
@@ -356,10 +362,24 @@ button{font-family:inherit;cursor:pointer;font-size:14px;border-radius:var(--rad
         <button class="theme-tab-btn" onclick="switchUserThemeTab(4)" id="uthemetab-4">Theme 4</button>
       </div>
 
+      <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+        <i class="ti ti-circle-dashed"></i> Not Yet Mastered
+        <span id="user-notmastered-count" class="pill" style="background:var(--bg4);color:var(--text3);font-size:10px">0</span>
+      </div>
       <div id="user-word-list" style="display:flex;flex-direction:column;gap:8px"></div>
       <div id="user-word-empty" style="text-align:center;color:var(--text3);padding:28px 0;font-size:13px;display:none">
         <i class="ti ti-books" style="font-size:32px;display:block;margin-bottom:8px;color:var(--text4)"></i>
         No words yet — the admin will add words soon!
+      </div>
+
+      <div style="font-size:12px;font-weight:700;color:var(--text2);margin:18px 0 8px;display:flex;align-items:center;gap:6px;border-top:1px solid var(--border);padding-top:14px">
+        <i class="ti ti-circle-check-filled" style="color:var(--accent)"></i> Mastered
+        <span id="user-mastered-list-count" class="pill" style="background:var(--accent-dim);color:var(--accent);font-size:10px">0</span>
+      </div>
+      <div id="user-mastered-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div id="user-mastered-empty" style="text-align:center;color:var(--text3);padding:20px 0;font-size:13px;display:none">
+        <i class="ti ti-bookmark" style="font-size:28px;display:block;margin-bottom:8px;color:var(--text4)"></i>
+        No mastered words yet — tap the checkmark on a word to mark it as mastered.
       </div>
     </div>
   </div>
@@ -397,6 +417,13 @@ button{font-family:inherit;cursor:pointer;font-size:14px;border-radius:var(--rad
           <button class="btn-primary" onclick="uCheckAnswer()" style="width:100%">Submit Answer</button>
         </div>
         <div id="uq-mcq" style="display:none;flex-direction:column;gap:8px"></div>
+        <div id="uq-matching" style="display:none;flex-direction:column;gap:10px">
+          <div style="display:flex;gap:14px">
+            <div id="uq-match-words" style="flex:1;display:flex;flex-direction:column;gap:8px"></div>
+            <div id="uq-match-meanings" style="flex:1;display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+          <button id="uq-match-submit" class="btn-primary" onclick="uCheckMatching()" style="width:100%">Submit Answers</button>
+        </div>
         <div id="uq-feedback" class="feedback" style="margin-top:12px"></div>
         <button id="uq-next" onclick="uNextQuestion()" class="btn-secondary" style="width:100%;margin-top:12px;display:none">
           Next <i class="ti ti-arrow-right"></i>
@@ -1032,6 +1059,24 @@ async function refreshDB() {
     const json = await res.json();
     DB_CACHE = Object.assign(defaultDB(), json.record || {});
     words = ls(KEY_WORDS) || [];
+
+    // If the currently logged-in (non-admin) user was banned or deleted, force logout
+    if (currentUser && !currentUser.isAdmin) {
+      const usersNow = DB_CACHE.av_users || {};
+      const myKey = currentUser.username.toLowerCase();
+      const me = usersNow[myKey];
+      if (!me) {
+        logoutUser();
+        showToast('⚠ Your account no longer exists.');
+        return;
+      }
+      if (me.banned) {
+        logoutUser();
+        showToast('⚠ Your account has been banned by the admin.');
+        return;
+      }
+    }
+
     // Re-render whatever is currently visible
     if (currentUser && !currentUser.isAdmin) {
       if (document.getElementById('usec-vocab').style.display !== 'none') { renderUserWordList(); updateUserWordBadge(); updateMasteredCounter(); }
@@ -1046,7 +1091,7 @@ async function refreshDB() {
     console.error('JSONBin refresh error:', e);
   }
 }
-setInterval(refreshDB, 15000);
+setInterval(refreshDB, 5000);
 
 async function init() {
   await loadDB();
@@ -1382,18 +1427,18 @@ function renderUserWordList() {
     filtered = filtered.filter(w => (w.theme || 1) === currentUserThemeTab);
   }
 
-  const el    = document.getElementById('user-word-list');
-  const empty = document.getElementById('user-word-empty');
+  const notMastered = filtered.filter(w => !masteredSet.has(w.id));
+  const mastered    = filtered.filter(w => masteredSet.has(w.id));
 
-  if (!filtered.length) {
-    el.innerHTML = '';
-    empty.style.display = 'block';
-    return;
-  }
-  empty.style.display = 'none';
+  const el      = document.getElementById('user-word-list');
+  const empty   = document.getElementById('user-word-empty');
+  const mEl     = document.getElementById('user-mastered-list');
+  const mEmpty  = document.getElementById('user-mastered-empty');
 
-  el.innerHTML = filtered.map(w => {
-    const isMastered = masteredSet.has(w.id);
+  document.getElementById('user-notmastered-count').textContent = notMastered.length;
+  document.getElementById('user-mastered-list-count').textContent = mastered.length;
+
+  const renderRow = (w, isMastered) => {
     const tClass = themeBadgeClass(w.theme || 1);
     return `
     <div class="word-row ${isMastered ? 'mastered' : ''}" style="cursor:default">
@@ -1411,7 +1456,24 @@ function renderUserWordList() {
         </button>
       </div>
     </div>
-  `}).join('');
+  `;
+  };
+
+  if (!notMastered.length) {
+    el.innerHTML = '';
+    empty.style.display = 'block';
+  } else {
+    empty.style.display = 'none';
+    el.innerHTML = notMastered.map(w => renderRow(w, false)).join('');
+  }
+
+  if (!mastered.length) {
+    mEl.innerHTML = '';
+    mEmpty.style.display = 'block';
+  } else {
+    mEmpty.style.display = 'none';
+    mEl.innerHTML = mastered.map(w => renderRow(w, true)).join('');
+  }
 }
 
 function updateUserWordBadge() {
@@ -1478,14 +1540,38 @@ function startUserQuiz() {
     return;
   }
 
-  const pool = shuffle(masteredWords).slice(0, Math.min(10, masteredWords.length));
-  // 4 question types, mixed randomly:
-  // 'audio-mcq'    : hear the word -> choose Arabic meaning
-  // 'audio-spell'  : hear the word -> type the English word
-  // 'text-mcq'     : see the English word -> choose Arabic meaning
-  // 'text-spell'   : see the Arabic meaning -> type the English word
+  const shuffled = shuffle(masteredWords);
+  const MAX_SLOTS = 15;
+  uQuizQs = [];
+  let pointer = 0;
+
+  // Decide how many matching questions to include (each uses 5 distinct words, counts as 1 slot)
+  let matchingCount = 0;
+  if (masteredWords.length >= 5) {
+    matchingCount = (masteredWords.length >= 10 && Math.random() < 0.5) ? 2 : 1;
+    // Don't let matching questions consume more words than available, leaving room for at least a few regular questions
+    if (matchingCount * 5 > masteredWords.length) matchingCount = 1;
+  }
+
   const TYPES = ['audio-mcq', 'audio-spell', 'text-mcq', 'text-spell'];
-  uQuizQs = pool.map((w) => {
+
+  // Build matching questions first (each takes 5 words from the shuffled pool)
+  const matchQs = [];
+  for (let m = 0; m < matchingCount; m++) {
+    if (pointer + 5 > shuffled.length) break;
+    const group = shuffled.slice(pointer, pointer + 5);
+    pointer += 5;
+    matchQs.push({
+      type: 'matching',
+      words: group.map(w => ({ word: w.word, arabic: w.arabic })),
+      shuffledArabic: shuffle(group.map(w => w.arabic))
+    });
+  }
+
+  // Remaining regular questions fill the rest of the slots (up to MAX_SLOTS total)
+  const remainingSlots = Math.max(0, MAX_SLOTS - matchQs.length);
+  const remainingWords = shuffled.slice(pointer).slice(0, remainingSlots);
+  const regularQs = remainingWords.map((w) => {
     const type = TYPES[Math.floor(Math.random() * TYPES.length)];
     if (type === 'audio-mcq' || type === 'text-mcq') {
       const wrong = shuffle(words.filter(x => x.id !== w.id)).slice(0, 3).map(x => x.arabic);
@@ -1493,6 +1579,14 @@ function startUserQuiz() {
     }
     return { type, word: w.word, arabic: w.arabic };
   });
+
+  // Interleave: place matching question(s) at random position(s) among the regular questions
+  uQuizQs = regularQs.slice();
+  matchQs.forEach(mq => {
+    const pos = Math.floor(Math.random() * (uQuizQs.length + 1));
+    uQuizQs.splice(pos, 0, mq);
+  });
+
   uQIdx = 0; uQScore = 0;
 
   document.getElementById('uquiz-start').style.display = 'none';
@@ -1518,8 +1612,24 @@ function uShowQuestion() {
   playBtn.disabled = false;
   playBtn.style.display = 'none';
 
+  // ===== Matching question type =====
+  if (q.type === 'matching') {
+    document.getElementById('uq-mcq').style.display = 'none';
+    document.getElementById('uq-spelling').style.display = 'none';
+    document.getElementById('uq-matching').style.display = 'flex';
+
+    document.getElementById('uq-badge').innerHTML = '<span class="tag tag-green"><i class="ti ti-arrows-join-2"></i> Matching — Connect each word to its meaning</span>';
+    document.getElementById('uq-prompt').innerHTML = 'Match each English word with its Arabic meaning:';
+
+    q.matchSelections = q.matchSelections || {}; // { wordIndex: arabicIndex }
+    renderMatchingUI(q);
+    return;
+  }
+
   const isMCQ   = (q.type === 'audio-mcq' || q.type === 'text-mcq');
   const isAudio = (q.type === 'audio-mcq' || q.type === 'audio-spell');
+
+  document.getElementById('uq-matching').style.display = 'none';
 
   if (isMCQ) {
     document.getElementById('uq-spelling').style.display = 'none';
@@ -1556,6 +1666,112 @@ function uShowQuestion() {
 
   // Auto-play the word for audio question types
   if (isAudio) setTimeout(() => uPlayAudio(), 400);
+}
+
+// =============================================
+// MATCHING QUESTION (5 English words <-> 5 Arabic meanings)
+// =============================================
+function renderMatchingUI(q) {
+  const wordsEl    = document.getElementById('uq-match-words');
+  const meaningsEl = document.getElementById('uq-match-meanings');
+
+  wordsEl.innerHTML = q.words.map((w, i) => `
+    <button class="q-option match-item ${q.matchSelections[i] !== undefined ? 'match-selected' : ''} ${q.selectedWordIdx === i ? 'match-active' : ''}"
+            onclick="uSelectMatchWord(${i})" data-word-idx="${i}">
+      ${escHtml(w.word)}
+      ${q.matchSelections[i] !== undefined ? `<span class="match-num">${q.matchSelections[i] + 1}</span>` : ''}
+    </button>
+  `).join('');
+
+  meaningsEl.innerHTML = q.shuffledArabic.map((a, j) => {
+    const usedBy = Object.entries(q.matchSelections).find(([, v]) => v === j);
+    return `
+    <button class="q-option match-item ${usedBy ? 'match-selected' : ''}" onclick="uSelectMatchMeaning(${j})" data-meaning-idx="${j}" dir="rtl">
+      ${usedBy ? `<span class="match-num">${parseInt(usedBy[0]) + 1}</span>` : ''}
+      ${escHtml(a)}
+    </button>
+  `;
+  }).join('');
+}
+
+function uSelectMatchWord(i) {
+  if (uQAnswered) return;
+  const q = uQuizQs[uQIdx];
+  q.selectedWordIdx = (q.selectedWordIdx === i) ? null : i;
+  renderMatchingUI(q);
+}
+
+function uSelectMatchMeaning(j) {
+  if (uQAnswered) return;
+  const q = uQuizQs[uQIdx];
+  if (q.selectedWordIdx === null || q.selectedWordIdx === undefined) return;
+
+  // Remove any existing mapping that used this meaning index
+  Object.keys(q.matchSelections).forEach(k => {
+    if (q.matchSelections[k] === j) delete q.matchSelections[k];
+  });
+  q.matchSelections[q.selectedWordIdx] = j;
+  q.selectedWordIdx = null;
+  renderMatchingUI(q);
+}
+
+function uCheckMatching() {
+  if (uQAnswered) return;
+  const q = uQuizQs[uQIdx];
+
+  if (Object.keys(q.matchSelections).length < q.words.length) {
+    showToast('Please match all 5 words before submitting.');
+    return;
+  }
+
+  let correctCount = 0;
+  const wordsEl    = document.getElementById('uq-match-words');
+  const meaningsEl = document.getElementById('uq-match-meanings');
+
+  q.words.forEach((w, i) => {
+    const chosenArabicIdx = q.matchSelections[i];
+    const chosenArabic = q.shuffledArabic[chosenArabicIdx];
+    const isRight = chosenArabic === w.arabic;
+    if (isRight) correctCount++;
+
+    const wBtn = wordsEl.querySelector(`[data-word-idx="${i}"]`);
+    wBtn.classList.add(isRight ? 'correct' : 'wrong');
+    wBtn.disabled = true;
+
+    const mBtn = meaningsEl.querySelector(`[data-meaning-idx="${chosenArabicIdx}"]`);
+    if (mBtn) { mBtn.classList.add(isRight ? 'correct' : 'wrong'); }
+  });
+
+  // Highlight the correct meaning for any wrong matches
+  q.words.forEach((w, i) => {
+    if (q.shuffledArabic[q.matchSelections[i]] !== w.arabic) {
+      const correctArabicIdx = q.shuffledArabic.indexOf(w.arabic);
+      const correctMeaningBtn = meaningsEl.querySelector(`[data-meaning-idx="${correctArabicIdx}"]`);
+      if (correctMeaningBtn && !correctMeaningBtn.classList.contains('correct')) {
+        correctMeaningBtn.classList.add('correct');
+      }
+    }
+  });
+
+  Array.from(meaningsEl.querySelectorAll('.q-option')).forEach(b => b.disabled = true);
+  document.getElementById('uq-match-submit').style.display = 'none';
+
+  const pointsEarned = correctCount * 0.5;
+  uQAnswered = true;
+  uQScore += pointsEarned;
+  q.correct = (correctCount === q.words.length);
+  q.matchCorrectCount = correctCount;
+  q.pointsEarned = pointsEarned;
+
+  document.getElementById('uq-score-live').textContent = uQScore + ' pts';
+  const fb = document.getElementById('uq-feedback');
+  fb.style.display = 'block';
+  fb.className = 'feedback ' + (q.correct ? 'correct' : (correctCount > 0 ? 'wrong' : 'wrong'));
+  fb.innerHTML = `<i class="ti ti-arrows-join-2"></i> ${correctCount} / ${q.words.length} correct — +${pointsEarned} pts`;
+
+  const nb = document.getElementById('uq-next');
+  nb.style.display = 'flex';
+  nb.innerHTML = uQIdx < uQuizQs.length - 1 ? 'Next <i class="ti ti-arrow-right"></i>' : 'See Results <i class="ti ti-arrow-right"></i>';
 }
 
 function uCheckAnswer() {
@@ -1606,7 +1822,7 @@ function uEndQuiz() {
   document.getElementById('uquiz-active').style.display = 'none';
   document.getElementById('uquiz-end').style.display = 'block';
 
-  const total = uQuizQs.length;
+  const total = uQuizQs.reduce((sum, q) => sum + (q.type === 'matching' ? q.words.length * 0.5 : 1), 0);
   const pct   = Math.round((uQScore / total) * 100);
   const now   = new Date();
 
@@ -1621,10 +1837,25 @@ function uEndQuiz() {
 
   document.getElementById('end-icon').textContent  = icon;
   document.getElementById('end-title').textContent = title;
-  document.getElementById('end-score').textContent = uQScore + ' / ' + total;
+  const fmtNum = n => (Math.round(n * 10) / 10).toString().replace(/\.0$/, '');
+  document.getElementById('end-score').textContent = fmtNum(uQScore) + ' / ' + fmtNum(total);
   document.getElementById('end-msg').textContent   = msg + ' (' + pct + '%)';
 
-  document.getElementById('uq-review').innerHTML = uQuizQs.map(q => `
+  document.getElementById('uq-review').innerHTML = uQuizQs.map(q => {
+    if (q.type === 'matching') {
+      return `
+      <div style="display:flex;align-items:flex-start;gap:9px;padding:10px;background:var(--bg3);border-radius:var(--radius-sm);border:1px solid ${q.correct?'var(--border)':'#ff4f4f44'}">
+        <span style="font-size:16px;flex-shrink:0">${q.correct ? '✅' : (q.matchCorrectCount > 0 ? '⚠️' : '❌')}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px">Matching</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:2px">${q.matchCorrectCount} / ${q.words.length} matched correctly</div>
+          <div style="font-size:11px;margin-top:4px;color:var(--text3)">${q.words.map(w => escHtml(w.word)).join(', ')}</div>
+        </div>
+        <span class="tag tag-purple" style="flex-shrink:0;font-size:10px">Matching</span>
+      </div>
+    `;
+    }
+    return `
     <div style="display:flex;align-items:flex-start;gap:9px;padding:10px;background:var(--bg3);border-radius:var(--radius-sm);border:1px solid ${q.correct?'var(--border)':'#ff4f4f44'}">
       <span style="font-size:16px;flex-shrink:0">${q.correct ? '✅' : '❌'}</span>
       <div style="flex:1;min-width:0">
@@ -1632,44 +1863,62 @@ function uEndQuiz() {
         <div style="font-size:12px;color:var(--accent);margin-top:2px" dir="rtl">${escHtml(q.arabic)}</div>
         ${!q.correct && q.userAnswer ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">Your answer: ${escHtml(q.userAnswer)}</div>` : ''}
       </div>
-      <span class="tag ${q.type==='audio-spelling'?'tag-blue':'tag-green'}" style="flex-shrink:0;font-size:10px">
-        ${q.type==='audio-spelling'?'Spelling':'MCQ'}
+      <span class="tag ${(q.type==='audio-spell'||q.type==='text-spell')?'tag-blue':'tag-green'}" style="flex-shrink:0;font-size:10px">
+        ${(q.type==='audio-spell'||q.type==='text-spell')?'Spelling':'MCQ'}
       </span>
     </div>
-  `).join('');
+  `;
+  }).join('');
+
+  // --- Build a flattened list of "wrong words" (handles matching sub-results) ---
+  const wrongWords = [];
+  uQuizQs.forEach(q => {
+    if (q.type === 'matching') {
+      q.words.forEach((w, i) => {
+        const chosenIdx = q.matchSelections ? q.matchSelections[i] : undefined;
+        const chosenArabic = (chosenIdx !== undefined) ? q.shuffledArabic[chosenIdx] : null;
+        if (chosenArabic !== w.arabic) {
+          wrongWords.push({ word: w.word, arabic: w.arabic, type: 'matching', userAnswer: chosenArabic });
+        }
+      });
+    } else if (!q.correct) {
+      wrongWords.push(q);
+    }
+  });
 
   // --- Remove wrong words from mastered automatically ---
-  const wrongQs = uQuizQs.filter(q => !q.correct);
-  if (wrongQs.length > 0) {
+  if (wrongWords.length > 0) {
     const set = getMasteredSet();
     const allWords = ls(KEY_WORDS) || [];
-    wrongQs.forEach(q => {
+    wrongWords.forEach(q => {
       const w = allWords.find(x => x.word === q.word);
       if (w) set.delete(w.id);
     });
     saveMasteredSet(set);
     updateMasteredCounter();
+    renderUserWordList();
   }
 
   // --- Mistakes Panel ---
   const mistakesPanel = document.getElementById('uq-mistakes-panel');
   const mistakesList  = document.getElementById('uq-mistakes-list');
   const mistakesCount = document.getElementById('uq-mistakes-count');
-  if (wrongQs.length > 0) {
+  if (wrongWords.length > 0) {
     mistakesPanel.style.display = 'block';
-    mistakesCount.textContent = wrongQs.length + ' كلمة';
+    mistakesCount.textContent = wrongWords.length + ' كلمة';
     mistakesList.innerHTML = `
       <div style="background:#ff4f4f12;border:1px solid #ff4f4f33;border-radius:var(--radius-sm);padding:10px 13px;font-size:12px;color:var(--danger);display:flex;align-items:center;gap:8px;margin-bottom:4px">
         <i class="ti ti-trash" style="font-size:16px;flex-shrink:0"></i>
         <span>هذه الكلمات <strong>حُذفت من محفوظاتك</strong> — راجعها وأعد حفظها من قائمة المفردات</span>
       </div>
-    ` + wrongQs.map(q => {
+    ` + wrongWords.map(q => {
       const isSpelling = (q.type === 'audio-spell' || q.type === 'text-spell');
+      const typeLabel = q.type === 'matching' ? 'سؤال التوصيل' : (isSpelling ? 'اختبار التهجئة' : 'اختيار من متعدد');
       return `
       <div class="review-word-card wrong-card">
         <div style="font-size:20px;flex-shrink:0">❌</div>
         <div style="flex:1;min-width:0">
-          <div style="font-size:11px;color:var(--text3);font-weight:600;letter-spacing:.3px;margin-bottom:6px">${isSpelling ? 'اختبار التهجئة' : 'اختيار من متعدد'}</div>
+          <div style="font-size:11px;color:var(--text3);font-weight:600;letter-spacing:.3px;margin-bottom:6px">${typeLabel}</div>
           <div style="font-weight:700;font-size:15px;color:var(--text)">${escHtml(q.word)}</div>
           <div style="font-size:13px;color:var(--accent);direction:rtl;margin-top:2px">${escHtml(q.arabic)}</div>
           <div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">
